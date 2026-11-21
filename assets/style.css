@@ -1,0 +1,26 @@
+html, body, [data-testid="stApp"] { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; }
+[data-testid="stAppViewContainer"] { background: #fafafa; }
+.block-container { max-width: 1230px; padding: 1.8rem 2.4rem 2rem; margin: 1.2rem auto; background: white; border: 1px solid #e6e6e6; border-radius: 28px; min-height: calc(100vh - 50px); }
+header[data-testid="stHeader"] { background: transparent; }
+.brand { display: flex; align-items: center; gap: 25px; padding: 2px 0 20px; }
+.brand-icon { font-size: 31px; color: #191919; width: 34px; }
+.brand-name { font-size: 29px; letter-spacing: -.6px; color:#171717; line-height: 1.23; font-weight: 500; }
+.brand-sub { font-size: 16px; color: #777; margin-top: 4px; }
+.prototype { text-align: right; color: #333; font-size: 14px; }
+[data-testid="stHorizontalBlock"] { align-items: start; }
+button[kind="primary"] { background: #f3f3f3 !important; color: #1c1c1c !important; border: none !important; box-shadow: none !important; }
+button[kind="secondary"] { background: transparent !important; color: #888 !important; border: none !important; box-shadow: none !important; }
+button[kind="primary"]:hover,button[kind="secondary"]:hover { background: #f3f3f3 !important; color: #171717 !important; }
+button { border-radius: 28px !important; }
+.content-divider { height: 24px; }
+.section-heading { font-size: 27px; font-weight: 650; color:#151515; margin-bottom: 22px; }
+.section-trail { font-size: 16px; color:#666; text-align:right; padding-top:8px; }
+.stat-number { font-size: 36px; font-weight: 650; color:#111; padding: 6px 0 0 16px; }
+.stat-label { font-size: 15px; color:#777; padding: 0 0 18px 16px; }
+.category-top {height:22px;}
+.cat-title {font-size:22px; color:#1f1f1f; padding-top:15px;}
+.cat-sub {font-size:16px; color:#858585; padding-bottom:25px;}
+.cat-gap {height:20px;}
+.bottom-divider { height: 1px; background: #ececec; margin: 28px 0 22px; }
+[data-testid="stSidebar"] {background:#f9f9f9;}
+@media(max-width:700px){.block-container{padding:1.2rem 1rem;border-radius:14px;}.brand-name{font-size:21px}.brand-sub{font-size:12px}.brand{gap:8px}.section-heading{font-size:22px}.section-trail{font-size:11px}.cat-title{font-size:17px}.cat-sub{font-size:12px}}
