@@ -1,3 +1,4 @@
+import html
 import json
 import os
 from datetime import date
@@ -5,15 +6,68 @@ from pathlib import Path
 import streamlit as st
 from services import db
 from services.gemini import ask
-from data.sample import SAMPLES, CATEGORIES
+from services import ai_news
+from services import supabase_news
+from data.sample import SAMPLES
 
 st.set_page_config(page_title='VC Intelligence · Research Companion', page_icon='🧠', layout='wide', initial_sidebar_state='collapsed')
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_fetch_supabase_news(supabase_url: str, _api_key: str):
+    """缓存云端新闻；_api_key 不参与 cache hash，避免密钥进入可见缓存键。"""
+    return supabase_news.fetch_ai_news(supabase_url, _api_key)
+
+
+def load_news_with_cache() -> dict:
+    """优先 Supabase（带缓存）；配置缺失或请求失败才回退 CSV。"""
+    url, key = supabase_news.get_supabase_credentials()
+    if not url or not key:
+        return supabase_news.load_news_feed()
+
+    try:
+        items = cached_fetch_supabase_news(url, key)
+        return {
+            'items': items,
+            'source': 'supabase',
+            'label': 'Supabase · public.ai_news',
+            'message': None,
+            'diagnostics': None,
+            'refreshed_at': supabase_news.utc_now_label(),
+            'used_fallback': False,
+        }
+    except Exception as exc:
+        # 仅连接/请求失败回退；成功空列表不会进入此分支
+        items, csv_hint = ai_news.load_news_csv()
+        source = 'demo' if csv_hint else 'csv_fallback'
+        detail = supabase_news.format_error_for_ui(exc)
+        msg = f'Supabase 连接失败，已回退本地数据（非云端实时）。\n{detail}'
+        if csv_hint:
+            msg = f'{msg}\n{csv_hint}'
+        return {
+            'items': items,
+            'source': source,
+            'label': '本地演示数据' if source == 'demo' else '本地 CSV（回退）',
+            'message': msg,
+            'diagnostics': detail,
+            'refreshed_at': supabase_news.utc_now_label(),
+            'used_fallback': True,
+        }
 
 css_path = Path(__file__).parent / 'assets' / 'style.css'
 st.markdown('<style>'+css_path.read_text(encoding='utf-8')+'</style>', unsafe_allow_html=True)
 db.initialize()
 
-for k, v in {'tab':'AI News', 'category':None, 'active_company':'', 'prompt':'', 'report':'', 'sources':[], 'chat':[]}.items():
+for k, v in {
+    'tab': 'AI News',
+    'category': None,
+    'news_view': '重点关注',
+    'active_company': '',
+    'prompt': '',
+    'report': '',
+    'sources': [],
+    'chat': [],
+}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -58,7 +112,8 @@ for i, name in enumerate(['AI News', '公司研究', '产业链', '可比公司'
         kind = 'primary' if st.session_state.tab == name else 'secondary'
         if st.button(name, key=f'nav_{i}', type=kind, use_container_width=True):
             st.session_state.tab = name
-            if name != 'AI News': st.session_state.category = None
+            if name != 'AI News':
+                st.session_state.category = None
             st.rerun()
 
 st.markdown('<div class="content-divider"></div>', unsafe_allow_html=True)
@@ -93,47 +148,152 @@ def show_sources(sources):
             for x in sources:
                 st.markdown(f"- [{x['title']}]({x['url']})")
 
+
+def jump_to_company_research(company_name: str):
+    name = (company_name or '').strip()
+    if not name or name == '未知':
+        return
+    st.session_state.active_company = name
+    st.session_state.tab = '公司研究'
+    st.rerun()
+
+
+def render_news_card(item: dict, key_prefix: str):
+    title_zh = html.escape(item.get('title_zh') or '未知')
+    summary_zh = html.escape(item.get('summary_zh') or '未知')
+    category = html.escape(item.get('category') or '未知')
+    source = html.escape(item.get('source') or '未知')
+    published = html.escape(ai_news.format_published(item.get('published_at')))
+    importance = html.escape(ai_news.importance_label(item.get('importance')))
+    companies = item.get('companies') or []
+    demo_tag = ' · 演示' if item.get('demo') else ''
+
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="news-title">{title_zh}{demo_tag}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f'<div class="news-meta">'
+            f'<span>类型 {category}</span>'
+            f'<span>重要性 {importance}</span>'
+            f'<span>来源 {source}</span>'
+            f'<span>时间 {published}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(f'<div class="news-summary">{summary_zh}</div>', unsafe_allow_html=True)
+
+        if companies:
+            st.caption('关联公司（点击跳转公司研究）')
+            cols = st.columns(min(len(companies), 4))
+            for i, company in enumerate(companies):
+                with cols[i % len(cols)]:
+                    if st.button(company, key=f'{key_prefix}_co_{i}', use_container_width=True):
+                        jump_to_company_research(company)
+        else:
+            st.caption('关联公司：未知')
+
+        with st.expander('英文原题 / 英文摘要 / 原始链接'):
+            st.markdown(f"**英文原题：** {item.get('title') or '未知'}")
+            st.markdown(f"**英文摘要：** {item.get('summary_en') or '未知'}")
+            url = item.get('url') or ''
+            if url.startswith(('http://', 'https://')):
+                st.link_button('打开原始新闻 ↗', url, use_container_width=False)
+            else:
+                st.caption('原始链接：未知')
+
+
 if st.session_state.tab == 'AI News':
-    if st.session_state.category:
-        section_heading(st.session_state.category, '已入库条目 · 非实时新闻源')
-        if st.button('← 返回资讯总览'):
-            st.session_state.category = None
+    feed = load_news_with_cache()
+    news_items = feed['items']
+    source = feed['source']
+    source_label = feed['label']
+    refreshed_at = feed['refreshed_at']
+
+    trail = 'Supabase' if source == 'supabase' else '本地回退'
+    section_heading('VC Research Dashboard', f'{date.today().isoformat()} · {trail}')
+
+    head_l, head_r = st.columns([8, 2], vertical_alignment='center')
+    with head_l:
+        st.caption(
+            f'数据来源：{source_label} · 条目 {len(news_items)} · 最近刷新 {refreshed_at}'
+            + (' · 缓存 TTL 300s' if source == 'supabase' else '')
+        )
+    with head_r:
+        if st.button('刷新新闻', use_container_width=True):
+            cached_fetch_supabase_news.clear()
             st.rerun()
-        news = db.list_news(st.session_state.category)
-        if not news:
-            st.info('暂无数据。可通过左侧导入 n8n JSON，或先载入演示新闻。')
-        for n in news:
-            with st.container(border=True):
-                st.markdown(f"**{n['title']}**" + ('  ·  `演示`' if n['demo'] else ''))
-                st.caption(' · '.join(s for s in [n['source'], n['published_at'], n['company']] if s))
-                st.write(n['summary'])
-                if n['url']: st.link_button('查看来源 ↗', n['url'])
-                if n['company'] and st.button(f"研究 {n['company']}", key=f"research_news_{n['id']}"):
-                    st.session_state.active_company = n['company']
-                    st.session_state.tab = '公司研究'
-                    st.rerun()
+
+    if feed.get('message'):
+        st.warning(feed['message'])
+        if feed.get('diagnostics'):
+            with st.expander('Supabase 诊断详情（不含 API Key）', expanded=False):
+                st.code(feed['diagnostics'], language='text')
+    elif source == 'supabase' and not news_items:
+        st.info('云端暂无新闻（Supabase `public.ai_news` 返回空列表）。不会自动展示本地 CSV。')
+
+    view_cols = st.columns(3, gap='small')
+    for i, view_name in enumerate(['重点关注', '早期机会', '行业动态']):
+        with view_cols[i]:
+            kind = 'primary' if st.session_state.news_view == view_name else 'secondary'
+            if st.button(view_name, key=f'news_view_{i}', type=kind, use_container_width=True):
+                st.session_state.news_view = view_name
+                st.rerun()
+
+    if st.session_state.news_view == '早期机会':
+        st.markdown(
+            '<div class="news-rule-box">'
+            '<div class="news-rule-title">早期机会 · 临时筛选说明</div>'
+            '<div class="news-rule-body">当前数据不含 Sourcing 评分，以下为透明临时规则，非正式投资评分：</div>'
+            + ''.join(f'<div class="news-rule-item">· {rule}</div>' for rule in ai_news.EARLY_OPPORTUNITY_RULES)
+            + '</div>',
+            unsafe_allow_html=True,
+        )
+    elif st.session_state.news_view == '重点关注':
+        st.caption('重点关注：重要性 ≥ 4，或 Policy/Funding 且重要性 ≥ 3。')
     else:
-        section_heading('Daily AI Intelligence', f'{date.today().isoformat()} · 本地资料库')
-        s = db.stats()
-        a,b,c = st.columns(3)
-        for col, count, name in [(a,s['total'],'已收录资讯'),(b,s['noteworthy'],'值得关注'),(c,s['projects'],'项目动态')]:
-            with col:
-                st.markdown(f'<div class="stat-number">{count}</div><div class="stat-label">{name}</div>', unsafe_allow_html=True)
-        if not s['total']:
-            st.caption('当前无新闻数据。左侧可导入 n8n JSON 或载入 5 条明确标记的演示样例。')
-        elif s['demos']:
-            st.caption(f'当前含 {s["demos"]} 条演示数据；以上为整个本地数据库统计，不代表今日实时新闻。')
-        st.markdown('<div class="category-top"></div>', unsafe_allow_html=True)
-        for index,(name,desc) in enumerate(CATEGORIES):
-            a,b = st.columns([12,1],vertical_alignment='center')
-            with a:
-                st.markdown(f'<div class="cat-title">▤ &nbsp; {name}</div><div class="cat-sub">&emsp;&emsp; {desc}</div>', unsafe_allow_html=True)
-            with b:
-                if st.button('›',key=f'category_{index}', help=f'浏览{name}'):
-                    st.session_state.category = name
-                    st.rerun()
-            if index < len(CATEGORIES)-1:
-                st.markdown('<div class="cat-gap"></div>', unsafe_allow_html=True)
+        st.caption('行业动态：Industry / Policy / Research 类型资讯。')
+
+    f1, f2, f3 = st.columns([3, 1.2, 1.2])
+    with f1:
+        keyword = st.text_input('关键词', placeholder='搜索中英文标题、摘要、公司、来源…')
+    with f2:
+        categories = ai_news.list_categories(news_items)
+        category_filter = st.selectbox('新闻类型', categories)
+    with f3:
+        importance_filter = st.selectbox(
+            '重要性 ≥',
+            ['全部', '5', '4', '3', '2', '1'],
+            help='筛选重要性 ≥ 所选值；缺失重要性的条目不会进入数值筛选结果',
+        )
+
+    filtered = ai_news.filter_news(
+        news_items,
+        view=st.session_state.news_view,
+        keyword=keyword,
+        category=category_filter,
+        importance_min=importance_filter,
+    )
+
+    total_label = '云端总条目' if source == 'supabase' else '本地总条目'
+    a, b, c = st.columns(3)
+    with a:
+        st.markdown(f'<div class="stat-number">{len(news_items)}</div><div class="stat-label">{total_label}</div>', unsafe_allow_html=True)
+    with b:
+        st.markdown(f'<div class="stat-number">{len(filtered)}</div><div class="stat-label">当前视图结果</div>', unsafe_allow_html=True)
+    with c:
+        focus_count = len([x for x in news_items if ai_news.match_focus(x)])
+        st.markdown(f'<div class="stat-number">{focus_count}</div><div class="stat-label">重点关注候选</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="news-list-gap"></div>', unsafe_allow_html=True)
+    if source == 'supabase' and not news_items:
+        pass
+    elif not filtered:
+        st.info('当前筛选条件下没有新闻。可切换视图或清空关键词。')
+    else:
+        for idx, item in enumerate(filtered):
+            render_news_card(item, key_prefix=f'news_{st.session_state.news_view}_{idx}')
 
 elif st.session_state.tab == '公司研究':
     section_heading('公司研究', 'Company Research · Gemini')
